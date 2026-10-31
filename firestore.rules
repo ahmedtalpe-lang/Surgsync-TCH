@@ -1,0 +1,122 @@
+rules_version = '2';
+
+// Unit D — Surgical Clinical Workspace (SurgSync)
+// Cloud Firestore Security Rules: enforces Unit D Protected Access Gate,
+// server-side passcode verification without exposing unit_config to pending accounts,
+// first-admin bootstrap, and approved-clinician access to patient records & libraries.
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function hasMyProfile() {
+      return exists(/databases/$(database)/documents/users/$(request.auth.uid));
+    }
+
+    function myProfile() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+    }
+
+    function isApproved() {
+      return isSignedIn() && hasMyProfile() && myProfile().status == 'approved';
+    }
+
+    function isAdmin() {
+      return isApproved() && myProfile().admin == true;
+    }
+
+    function isBootstrapped() {
+      return exists(/databases/$(database)/documents/settings/bootstrap);
+    }
+
+    function unitConfig() {
+      return get(/databases/$(database)/documents/settings/unit_config).data;
+    }
+
+    // --- Unit bootstrap marker & shared unit configuration ---
+    match /settings/bootstrap {
+      allow get: if isSignedIn();
+      allow create: if isSignedIn()
+        && !isBootstrapped()
+        && request.resource.data.adminUid == request.auth.uid;
+      allow update, delete: if isAdmin();
+    }
+
+    match /settings/unit_config {
+      // Only approved clinicians can read unit_config (passcode stays hidden from pending accounts).
+      allow get: if isApproved();
+      allow create: if (isSignedIn() && !isBootstrapped()) || isAdmin();
+      // Admins can update everything (including passcode); approved clinicians can seed libraries & add custom labs.
+      allow update: if isAdmin() || (
+        isApproved()
+        && request.resource.data.get('passcode', '') == resource.data.get('passcode', '')
+      );
+      allow delete: if false;
+    }
+
+    // --- Clinician roster & Unit D Protected Access Gate ---
+    match /users/{uid} {
+      allow get: if isSignedIn() && (request.auth.uid == uid || isApproved());
+      allow list: if isApproved();
+
+      allow create: if isSignedIn() && request.auth.uid == uid && (
+        // Standard registration starts in Pending Authorization state
+        (request.resource.data.status == 'pending' && request.resource.data.admin == false)
+        // First Unit Head / Admin bootstrap on a brand-new unit
+        || (
+          !isBootstrapped()
+          && getAfter(/databases/$(database)/documents/settings/bootstrap).data.adminUid == request.auth.uid
+          && request.resource.data.status == 'approved'
+          && request.resource.data.admin == true
+        )
+      );
+
+      allow update: if isAdmin()
+        // Clinician updating their own profile or requesting admin approval without self-promoting
+        || (
+          isSignedIn()
+          && request.auth.uid == uid
+          && request.resource.data.status == resource.data.status
+          && request.resource.data.admin == resource.data.admin
+        )
+        // Pending clinician unlocking access by supplying the exact Unit D passcode
+        || (
+          isSignedIn()
+          && request.auth.uid == uid
+          && request.resource.data.status == 'approved'
+          && request.resource.data.joinCode is string
+          && request.resource.data.joinCode.size() >= 4
+          && request.resource.data.joinCode == unitConfig().passcode
+          && (
+            request.resource.data.admin == resource.data.admin
+            || (
+              !isBootstrapped()
+              && getAfter(/databases/$(database)/documents/settings/bootstrap).data.adminUid == request.auth.uid
+            )
+          )
+        );
+
+      allow delete: if isAdmin();
+    }
+
+    // --- Surgical ward patients, imaging/wound media, drug catalog & checklist pathways ---
+    match /patients/{patientId} {
+      allow read, write: if isApproved();
+
+      match /media/{mediaId} {
+        allow read, write: if isApproved()
+          && (request.method == 'delete' || request.resource.data.data.size() < 260000);
+      }
+    }
+
+    match /drugs/{drugId} {
+      allow read, write: if isApproved();
+    }
+
+    match /templates/{templateId} {
+      allow read, write: if isApproved();
+    }
+  }
+}
