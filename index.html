@@ -3162,7 +3162,15 @@ async function boot() {
   applyTheme(localStorage.getItem(LS.theme) || 'dark');
   setIcons(); registerSW(); wireInstall();
   state._day = todayStr();
-  const cfg = getFirebaseConfig();
+  const cfg = {
+  apiKey: "AIzaSyDdTJOfBNa0hw4sPvb1SyHSIAZA3YNyqdE",
+  authDomain: "surgsync-tch.firebaseapp.com",
+  projectId: "surgsync-tch",
+  storageBucket: "surgsync-tch.firebasestorage.app",
+  messagingSenderId: "141984340359",
+  appId: "1:141984340359:web:713e6bce52b6b3db501b22",
+  measurementId: "G-PMJGJWE0Z2"
+};
   if (cfg) {
     try { await loadFirebase(cfg); state.mode = 'firebase'; state.sync = navigator.onLine ? 'connecting' : 'offline'; }
     catch (e) { console.error(e); state.bootError = `Could not load the Firebase SDK (${errMsg(e)}). Check your connection and try again.`; state.booted = true; renderApp(); return; }
